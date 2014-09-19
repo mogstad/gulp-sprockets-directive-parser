@@ -1,0 +1,333 @@
+var gutil = require("gulp-util"),
+    should = require("should"),
+    include = require("../index"),
+    fs = require("fs"),
+    vm = require('vm');
+
+describe("gulp-sprockets-directive-parser", function () {
+    describe.only("directive matching", function () {
+        beforeEach(function() {
+            var exports = {};
+            this.include_module = {
+                require: require,
+                console: console,
+                exports: exports,
+                module: {
+                    exports: exports
+                }
+            };
+            vm.runInNewContext(fs.readFileSync('index.js'), this.include_module);
+        });
+
+        it("matches require", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("= require src/blah.js")
+            should.exist(matches)
+            matches[0].should.eql('= require src/blah.js')
+            matches[1].should.eql('require')
+            matches[2].should.eql('src/blah.js')
+        });
+
+        it("matches require_tree", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("= require_tree src")
+            should.exist(matches)
+            matches[0].should.eql('= require_tree src')
+            matches[1].should.eql('require_tree')
+            matches[2].should.eql('src')
+        });
+
+        it("matches require_directory", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("= require_directory src")
+            should.exist(matches)
+            matches[0].should.eql('= require_directory src')
+            matches[1].should.eql('require_directory')
+            matches[2].should.eql('src')
+        });
+
+        it("doesn’t match 'var x = require(blah)'", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("var x = require('fakemod')")
+            should.not.exist(matches)
+        });
+
+        it("matches relative requires", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("= require ../src/blah.js")
+            should.exist(matches)
+            matches[0].should.eql('= require ../src/blah.js')
+            matches[1].should.eql('require')
+            matches[2].should.eql('../src/blah.js')
+        });
+
+        it("matches require_self directive", function () {
+            matches = this.include_module.DIRECTIVE_REGEX.exec("= require_self bop")
+            should.exist(matches)
+            matches[0].should.eql('= require_self bop')
+            matches[1].should.eql('require_self')
+        });
+    })
+
+    describe("expanding", function () {
+        var file = null;
+        var results = [];
+        var fixture = function(name) {
+            return new gutil.File({
+                base: "test/fixtures/",
+                path: "test/fixtures/"+ name,
+                contents: fs.readFileSync("test/fixtures/"+ name)
+            });
+        };
+        beforeEach(function(done) {
+            results = [];
+            includeStream = include();
+            includeStream.on("data", function(file) {
+                results.push(file);
+            });
+            includeStream.on("end", done);
+            includeStream.write(file);
+            includeStream.end();
+        });
+
+        describe("= require", function() {
+            context("simple_require", function() {
+                before(function() {
+                    file = fixture("simple_require.js")
+                });
+                it("expands require files", function() {
+                    results.length.should.eql(3)
+                    results[0].path.should.eql("test/fixtures/simple_require/a.js")
+                    results[1].path.should.eql("test/fixtures/simple_require/b.js")
+                    results[2].path.should.eql("test/fixtures/simple_require.js")
+                });
+                it("sets same `basePath` as passed in file", function() {
+                    results.length.should.eql(3)
+                    results[0].base.should.eql("test/fixtures/")
+                    results[1].base.should.eql("test/fixtures/")
+                    results[1].base.should.eql("test/fixtures/")
+                });
+            });
+
+            context("prevent_duplications", function() {
+                before(function() { file = fixture("prevent_duplications.js"); });
+                it("prevents same file from being added more then once", function() {
+                    results.length.should.eql(2);
+                    results[0].path.should.eql("test/fixtures/prevent_duplications/a.js")
+                    results[1].path.should.eql("test/fixtures/prevent_duplications.js")
+                });
+            });
+            context("requires_simple_require", function() {
+                before(function() { file = fixture("requires_simple_require.js"); });
+                it("requires a file with its own requires", function() {
+                    results.length.should.eql(4)
+                    results[0].path.should.eql("test/fixtures/simple_require/a.js")
+                    results[1].path.should.eql("test/fixtures/simple_require/b.js")
+                    results[2].path.should.eql("test/fixtures/simple_require.js")
+                    results[3].path.should.eql("test/fixtures/requires_simple_require.js")
+                });
+            });
+        });
+
+        describe("= require_tree", function() {
+            context("require_tree", function() {
+                before(function() { file = fixture("require_tree.js"); });
+                it("requires file correctly", function() {
+                    results.length.should.eql(3)
+                    results[0].path.should.eql("test/fixtures/require_tree/a.js")
+                    results[1].path.should.eql("test/fixtures/require_tree/b.js")
+                    results[2].path.should.eql("test/fixtures/require_tree.js")
+                });
+            });
+
+            context("require_tree_require", function() {
+                before(function() { file = fixture("require_tree_require.js"); });
+
+                it("requires tree", function() {
+                    results.length.should.eql(3)
+                    results[0].path.should.eql("test/fixtures/require_tree_require/b.js")
+                    results[1].path.should.eql("test/fixtures/require_tree_require/a.js")
+                    results[2].path.should.eql("test/fixtures/require_tree_require.js")
+                });
+
+                it("inherits base path", function() {
+                    results.length.should.eql(3)
+                    results[0].base.should.eql("test/fixtures/")
+                    results[1].base.should.eql("test/fixtures/")
+                    results[2].base.should.eql("test/fixtures/")
+                });
+            });
+        });
+
+        describe("= require_self", function() {
+            it("inserts itself correctly", function() {
+                before(function() { file = fixture("require_self.js"); });
+                it("insers itself in the middle", function() {
+                    results.length.should.eql(3);
+                    results[0].path.should.eql("test/fixtures/require_self/a.js");
+                    results[1].path.should.eql("test/fixtures/require_self.js");
+                    results[2].path.should.eql("test/fixtures/require_self/a.js");
+                });
+            });
+        });
+
+        describe("= stub", function() {
+            context("stub_file", function() {
+                before(function() { file = fixture("stub_file.js"); });
+                it("stubs file", function() {
+                    results.length.should.eql(2);
+                    results[0].path.should.eql("test/fixtures/stub_file/a.js");
+                    results[1].path.should.eql("test/fixtures/stub_file.js");
+                });
+            });
+            context("stub_file_post_mortem", function() {
+                before(function() { file = fixture("stub_file.js"); });
+                it("stubs already included file", function() {
+                    results.length.should.eql(2);
+                    results[0].path.should.eql("test/fixtures/stub_file/a.js");
+                    results[1].path.should.eql("test/fixtures/stub_file.js");
+                });
+            });
+        });
+    });
+    describe.skip("something", function() {
+        it("should only include the files with the provided SINGLE extension", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/",
+                path: "test/fixtures/app.js",
+                contents: fs.readFileSync("test/fixtures/app.js")
+            });
+
+            testInclude = include({
+                extensions: "txt"
+            });
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile);
+                should.exist(newFile.contents);
+
+                String(newFile.contents).should.equal(String(fs.readFileSync("test/expected/app_only_txt.js"), "utf8"))
+                done();
+            });
+            testInclude.write(file);
+        });
+
+        it("should only include the files with the provided MULTIPLE extensions", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/",
+                path: "test/fixtures/app.js",
+                contents: fs.readFileSync("test/fixtures/app.js")
+            });
+
+            testInclude = include({
+                extensions: ["txt", "js"]
+            });
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile);
+                should.exist(newFile.contents);
+
+                String(newFile.contents).should.equal(String(fs.readFileSync("test/expected/app_multiple_extensions.js"), "utf8"))
+                done();
+            });
+            testInclude.write(file);
+        });
+
+        it("should include files with a relative path", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/relative/",
+                path: "test/fixtures/relative/app.js",
+                contents: fs.readFileSync("test/fixtures/relative/app.js")
+            });
+
+
+            testInclude = include({
+                extensions: ['js']
+            })
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile)
+                should.exist(newFile.contents)
+
+                String(newFile.contents).should.equal(String(fs.readFileSync('test/expected/relative.js'), "utf8"))
+                done()
+            })
+            testInclude.write(file)
+        })
+
+        it("Should work on recursive includes", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/",
+                path: "test/fixtures/app_recursive.js",
+                contents: fs.readFileSync("test/fixtures/app_recursive.js")
+            });
+
+
+            testInclude = include({
+                extensions: ['js']
+            })
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile)
+                should.exist(newFile.contents)
+
+                String(newFile.contents).should.equal(String(fs.readFileSync('test/expected/app_recursive.js'), "utf8"))
+                done()
+            })
+            testInclude.write(file)
+        })
+
+        it("Should work on glob includes", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/globs/",
+                path: "test/fixtures/globs/app.js",
+                contents: fs.readFileSync("test/fixtures/globs/app.js")
+            });
+
+
+            testInclude = include({
+                extensions: ['js']
+            })
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile)
+                should.exist(newFile.contents)
+
+                String(newFile.contents).should.equal(String(fs.readFileSync('test/expected/app_globs.js'), "utf8"))
+                done()
+            });
+            testInclude.write(file)
+        })
+
+        it("Should match leading whitespace", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/whitespace/",
+                path: "test/fixtures/whitespace/a.js",
+                contents: fs.readFileSync("test/fixtures/whitespace/a.js")
+            });
+
+
+            var testInclude = include({
+                extensions: 'js'
+            })
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile)
+                should.exist(newFile.contents)
+
+                String(newFile.contents).should.equal(String(fs.readFileSync('test/expected/whitespace.js'), "utf8"))
+                done()
+            });
+            testInclude.write(file)
+        })
+
+        it("Should work with css files", function (done) {
+            var file = new gutil.File({
+                base: "test/fixtures/styles/",
+                path: "test/fixtures/styles/a.css",
+                contents: fs.readFileSync("test/fixtures/styles/a.css")
+            });
+
+
+            var testInclude = include();
+            testInclude.on("data", function (newFile) {
+                should.exist(newFile)
+                should.exist(newFile.contents)
+
+                String(newFile.contents).should.equal(String(fs.readFileSync('test/expected/styles.css'), "utf8"))
+                done()
+            });
+            testInclude.write(file)
+        })
+
+    })
+});
